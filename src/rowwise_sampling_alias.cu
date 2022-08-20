@@ -263,7 +263,7 @@ std::vector<torch::Tensor> RowWiseSamplingProb_Alias(
         printf("Not Implemented.\n");
     }
 
-    return {coo_row, coo_col, temp_alias, temp_probs};
+    return {coo_row, coo_col};
 }
 
 static auto registry =
