@@ -237,8 +237,8 @@ std::vector<torch::Tensor> RowWiseSamplingProb_Alias(
 
     const uint64_t random_seed = 7777;
     const int group_num = 4;
-    const int group_size = 128 / group_num;
-    constexpr int TILE_SIZE = 128 / group_size;
+    const int group_size = BLOCK_SIZE / group_num;
+    constexpr int TILE_SIZE = 128 / BLOCK_SIZE;
     if (replace)
     {
         const dim3 block(group_size, group_num);
