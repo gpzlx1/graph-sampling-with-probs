@@ -62,10 +62,11 @@ __device__ inline void prob_normalize(
 
     sum = cg::reduce(g, thread_data, cg::plus<FloatType>());
     sum = g.shfl(sum, 0);
+    FloatType div = prob_len / sum;
 
     for (int i = laneid; i < prob_len; i += g.size())
     {
-        _temp_prob[i] = _temp_prob[i] * prob_len / sum;
+        _temp_prob[i] = _temp_prob[i] * div;
     }
 }
 
