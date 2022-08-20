@@ -56,7 +56,8 @@ __device__ inline void prob_normalize(
     FloatType sum = 0;
     for (int i = laneid; i < prob_len; i += g.size())
     {
-        thread_data += prob[i];
+        _temp_prob[i] = prob[i];
+        thread_data += _temp_prob[i];
     }
 
     sum = cg::reduce(g, thread_data, cg::plus<FloatType>());
@@ -64,7 +65,7 @@ __device__ inline void prob_normalize(
 
     for (int i = laneid; i < prob_len; i += g.size())
     {
-        _temp_prob[i] = prob[i] * prob_len / sum;
+        _temp_prob[i] = _temp_prob[i] * prob_len / sum;
     }
 }
 
@@ -161,9 +162,10 @@ __global__ void _CSRRowWiseSampleAliasReplaceKernel(
     assert(group_num == blockDim.y);
     __shared__ int shared_size[4 * group_num];
     int *shared_size_per_group = shared_size + threadIdx.y * 4;
-    __shared__ cg::experimental::block_tile_memory<4, 128> shared;
-    cg::thread_block block = cg::experimental::this_thread_block(shared);
-    cg::thread_block_tile<group_size> group = cg::experimental::tiled_partition<group_size>(block);
+
+    //__shared__ cg::experimental::block_tile_memory<4, 128> shared;
+    cg::thread_block block = cg::this_thread_block();
+    cg::thread_block_tile<group_size> group = cg::tiled_partition<group_size>(block);
     int laneid = group.thread_rank();
 
     int64_t out_row = blockIdx.x * TILE_SIZE + threadIdx.y;
@@ -183,7 +185,7 @@ __global__ void _CSRRowWiseSampleAliasReplaceKernel(
         if (deg > 0)
         {
             // normalize
-            prob_normalize<FloatType, group_size>(&prob[in_row_start], &_temp_probs[temp_row_start], deg, group);
+            prob_normalize<FloatType, group_size>(prob + in_row_start, _temp_probs + temp_row_start, deg, group);
 
             pack_vector<IdType> _large(_temp_large + temp_row_start, shared_size_per_group, 0, sizeof(IdType) * deg);
             pack_vector<IdType> _small(_temp_small + temp_row_start, shared_size_per_group + 1, 0, sizeof(IdType) * deg);
@@ -230,16 +232,16 @@ std::vector<torch::Tensor> RowWiseSamplingProb_Alias(
     torch::Tensor coo_col = torch::empty(nnz, indices.options());
     torch::Tensor temp_large = torch::empty(temp_size, seeds.options());
     torch::Tensor temp_small = torch::empty(temp_size, seeds.options());
-    torch::Tensor temp_alias = torch::empty(temp_size, seeds.options());
+    torch::Tensor temp_alias = torch::zeros(temp_size, seeds.options());
     torch::Tensor temp_probs = torch::empty(temp_size, probs.options());
 
     const uint64_t random_seed = 7777;
-    const int group_num = 1;
+    const int group_num = 4;
     const int group_size = 128 / group_num;
-    constexpr int TILE_SIZE = 128 / BLOCK_SIZE;
+    constexpr int TILE_SIZE = 128 / group_size;
     if (replace)
     {
-        const dim3 block(BLOCK_SIZE);
+        const dim3 block(group_size, group_num);
         const dim3 grid((num_rows + TILE_SIZE - 1) / TILE_SIZE);
         _CSRRowWiseSampleAliasReplaceKernel<int64_t, float, TILE_SIZE, group_num, group_size><<<grid, block>>>(
             random_seed,
