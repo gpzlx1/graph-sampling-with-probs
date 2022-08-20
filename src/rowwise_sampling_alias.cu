@@ -49,22 +49,24 @@ __device__ inline void prob_normalize(
     const FloatType *const prob,
     FloatType *_temp_prob,
     int64_t prob_len,
-    cg::thread_block_tile<group_size> g)
+    int laneid,
+    int group_id,
+    typename cub::WarpReduce<FloatType>::TempStorage *temp_storage)
 {
-    int laneid = g.thread_rank();
+    typedef cub::WarpReduce<FloatType> WarpReduce;
+
     FloatType thread_data = 0;
-    FloatType sum = 0;
-    for (int i = laneid; i < prob_len; i += g.size())
+    for (int i = laneid; i < prob_len; i += group_size)
     {
         _temp_prob[i] = prob[i];
         thread_data += _temp_prob[i];
     }
 
-    sum = cg::reduce(g, thread_data, cg::plus<FloatType>());
-    sum = g.shfl(sum, 0);
-    FloatType div = prob_len / sum;
+    FloatType aggregate = WarpReduce(temp_storage[group_id]).Sum(thread_data);
+    aggregate = __shfl_sync(0xFFFFFFFF, aggregate, 0);
+    FloatType div = prob_len / aggregate;
 
-    for (int i = laneid; i < prob_len; i += g.size())
+    for (int i = laneid; i < prob_len; i += group_size)
     {
         _temp_prob[i] = _temp_prob[i] * div;
     }
@@ -76,22 +78,37 @@ __device__ inline void _consturctAliasTablePerGroups(
     pack_vector<IdType> small,
     pack_vector<IdType> alias,
     pack_vector<FloatType> probs,
-    cg::thread_block_tile<group_size> g)
+    int laneid,
+    int group_id,
+    cub::WarpScan<int>::TempStorage *temp_storage)
 {
-    int laneid = g.thread_rank();
-    int g_size = g.size();
-    for (int i = laneid; i < alias.Size(); i += g_size)
+    typedef cub::WarpScan<int> WarpScan;
+
+    int thread_data = 0;
+    int prefix_op = 0;
+
+    for (int i = laneid; i < alias.Size(); i += group_size)
     {
+        thread_data = probs.Get(i) > 1 ? 1 : 0;
+        if (laneid == 0)
+            thread_data += prefix_op;
+        WarpScan(temp_storage[group_id]).InclusiveSum(thread_data, thread_data, prefix_op);
+
         if (probs.Get(i) > 1)
         {
-            large.Add(i);
+            large.data[thread_data - 1] = i;
         }
         else
         {
-            small.Add(i);
+            small.data[i - thread_data] = i;
+        }
+
+        if (i == alias.Size() - 1)
+        {
+            *large.size = thread_data;
+            *small.size = alias.Size() - thread_data;
         }
     }
-    g.sync();
 
     while ((!small.Empty()) && (!large.Empty()))
     {
@@ -100,33 +117,20 @@ __device__ inline void _consturctAliasTablePerGroups(
         uint tmp = min(old_small_size, old_large_size);
         uint act_size = min(group_size, tmp);
         bool act = laneid < act_size;
-        g.sync();
 
         if (laneid == 0)
         {
             *small.size -= act_size;
             *large.size -= act_size;
         }
-        g.sync();
 
-        IdType smallV;
-        IdType largeV;
         if (act)
         {
+            IdType smallV;
+            IdType largeV;
             smallV = small.Get(old_small_size + laneid - act_size);
             largeV = large.Get(old_large_size + laneid - act_size);
-        }
-        g.sync();
-
-        // float old;
-        if (act)
-        {
             atomicAdd(&probs.data[largeV], probs.Get(smallV) - 1.0);
-        }
-        g.sync();
-
-        if (act)
-        {
             alias.data[smallV] = largeV;
             if (probs.Get(largeV) < 1.0)
             {
@@ -137,7 +141,6 @@ __device__ inline void _consturctAliasTablePerGroups(
                 large.Add(largeV);
             }
         }
-        g.sync();
     }
 }
 
@@ -159,15 +162,17 @@ __global__ void _CSRRowWiseSampleAliasReplaceKernel(
     IdType *const out_rows,
     IdType *const out_cols)
 {
+    assert(group_size == 32);
     assert(group_size == blockDim.x);
     assert(group_num == blockDim.y);
     __shared__ int shared_size[4 * group_num];
     int *shared_size_per_group = shared_size + threadIdx.y * 4;
 
-    //__shared__ cg::experimental::block_tile_memory<4, 128> shared;
-    cg::thread_block block = cg::this_thread_block();
-    cg::thread_block_tile<group_size> group = cg::tiled_partition<group_size>(block);
-    int laneid = group.thread_rank();
+    __shared__ typename cub::WarpScan<int>::TempStorage scan_temp_storage[group_num];
+    __shared__ typename cub::WarpReduce<FloatType>::TempStorage reduce_temp_storage[group_num];
+
+    int laneid = threadIdx.x;
+    int group_id = threadIdx.y;
 
     int64_t out_row = blockIdx.x * TILE_SIZE + threadIdx.y;
     const int64_t last_row = min(static_cast<int64_t>(blockIdx.x + 1) * TILE_SIZE, num_rows);
@@ -186,7 +191,7 @@ __global__ void _CSRRowWiseSampleAliasReplaceKernel(
         if (deg > 0)
         {
             // normalize
-            prob_normalize<FloatType, group_size>(prob + in_row_start, _temp_probs + temp_row_start, deg, group);
+            prob_normalize<FloatType, group_size>(prob + in_row_start, _temp_probs + temp_row_start, deg, laneid, group_id, reduce_temp_storage);
 
             pack_vector<IdType> _large(_temp_large + temp_row_start, shared_size_per_group, 0, sizeof(IdType) * deg);
             pack_vector<IdType> _small(_temp_small + temp_row_start, shared_size_per_group + 1, 0, sizeof(IdType) * deg);
@@ -194,10 +199,10 @@ __global__ void _CSRRowWiseSampleAliasReplaceKernel(
             pack_vector<FloatType> _probs(_temp_probs + temp_row_start, shared_size_per_group + 3, deg, sizeof(FloatType) * deg);
 
             // construct alias table
-            _consturctAliasTablePerGroups<IdType, FloatType, group_size>(_large, _small, _alias, _probs, group);
+            _consturctAliasTablePerGroups<IdType, FloatType, group_size>(_large, _small, _alias, _probs, laneid, group_id, scan_temp_storage);
 
             // select with alias table
-            for (int64_t idx = laneid; idx < num_picks; idx += group.size())
+            for (int64_t idx = laneid; idx < num_picks; idx += group_size)
             {
                 int col = (int)floor(curand_uniform(&rng) * _alias.Size());
                 float p = curand_uniform(&rng);
@@ -266,7 +271,7 @@ std::vector<torch::Tensor> RowWiseSamplingProb_Alias(
         printf("Not Implemented.\n");
     }
 
-    return {coo_row, coo_col};
+    return {coo_row, coo_col}; //, temp_large, temp_small, temp_alias, temp_probs};
 }
 
 static auto registry =
