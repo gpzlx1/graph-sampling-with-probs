@@ -10,6 +10,11 @@
 #include <thrust/remove.h>
 #include <thrust/device_ptr.h>
 
+#define _CG_ABI_EXPERIMENTAL // 
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+namespace cg = cooperative_groups;
+
 #define MIN(x, y) ((x < y) ? x : y)
 #define MAX(x, y) ((x > y) ? x : y)
 
