@@ -1,7 +1,8 @@
 import os
 import torch
 from bench import bench
-from load_graph import load_reddit, load_ogbn_products
+from load_graph import load_reddit, load_ogbn_products, load_generate
+import random
 
 so_path = os.path.join("/home/gpzlx1/graph_sampling_with_probs/build",
                        'libgswp.so')
@@ -16,14 +17,16 @@ for i in torch.ops.gswp.RowWiseSamplingProb_CDF(seeds, indptr, indices, probs,
                                                 5, True):
     print(i)
 
-g, _, _, _, _ = load_reddit()
+g, _, _, _, _ = load_generate(500000, 100)
 g = g.formats(['csr'])
 csr = g.adj(scipy_fmt='csr')
-seeds = torch.arange(0, 200000).long().cuda()
+seeds = [i for i in range(200000)]
+random.shuffle(seeds)
+seeds = torch.tensor(seeds).long().cuda()
 indptr = torch.tensor(csr.indptr).long().cuda()
 indices = torch.tensor(csr.indices).long().cuda()
 probs = torch.rand(indices.numel()).abs().float().cuda()
-num_picks = 25
+num_picks = 5
 replace = True
 
 @bench(True)

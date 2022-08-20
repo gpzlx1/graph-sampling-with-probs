@@ -30,3 +30,11 @@ def load_ogbn_products():
     g = dgl.remove_self_loop(g)
     g = dgl.add_self_loop(g)
     return g, feat, labels, n_classes, splitted_idx
+
+def load_generate(num_nodes, deg):
+    indptr = torch.arange(0, num_nodes + 1) * deg
+    indices = torch.randint(0, num_nodes, (num_nodes * deg,))
+    edge_ids = torch.arange(num_nodes * deg)
+
+    g = dgl.graph(('csr', (indptr, indices, edge_ids)))
+    return g, None, None, None, None
