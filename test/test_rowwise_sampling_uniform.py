@@ -1,5 +1,7 @@
 import os
 import torch
+from bench import bench
+from load_graph import load_reddit, load_ogbn_products
 
 so_path = os.path.join("/home/gpzlx1/graph_sampling_with_probs/build",
                        'libgswp.so')
@@ -17,3 +19,21 @@ for i in torch.ops.gswp.RowWiseSamplingUniform(seeds, indptr, indices,
 for i in torch.ops.gswp.RowWiseSamplingUniform(seeds, indptr, indices,
                                                num_pick, True):
     print(i)
+
+g, _, _, _, _ = load_reddit()
+g = g.formats(['csr'])
+csr = g.adj(scipy_fmt='csr')
+seeds = torch.arange(0, 200000).long().cuda()
+indptr = torch.tensor(csr.indptr).long().cuda()
+indices = torch.tensor(csr.indices).long().cuda()
+num_picks = 25
+replace = True
+
+
+@bench(True)
+def bench_func(seeds, indptr, indices, num_picks, replace):
+    torch.ops.gswp.RowWiseSamplingUniform(seeds, indptr, indices, num_picks,
+                                           replace)
+
+
+bench_func(seeds, indptr, indices, num_picks, replace)
