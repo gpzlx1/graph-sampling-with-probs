@@ -15,6 +15,7 @@ __global__ void _CSRRowWiseSampleKernel(
     IdType *const out_cols)
 {
     // we assign one warp per row
+    assert(num_picks <= 32);
     assert(blockDim.x == WARP_SIZE);
     assert(blockDim.y == BLOCK_WARPS);
 
