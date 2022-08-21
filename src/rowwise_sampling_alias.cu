@@ -87,28 +87,35 @@ __device__ inline void _consturctAliasTablePerGroups(
     int thread_data = 0;
     int prefix_op = 0;
 
-    for (int i = laneid; i < alias.Size(); i += group_size)
+    int64_t max_iter = (1 + (alias.Size() - 1) / group_size) * group_size;
+
+    for (int i = laneid; i < max_iter; i += group_size)
     {
-        thread_data = probs.Get(i) > 1 ? 1 : 0;
+        thread_data = i < alias.Size() and probs.Get(i) > 1 ? 1 : 0;
         if (laneid == 0)
             thread_data += prefix_op;
         WarpScan(temp_storage[group_id]).InclusiveSum(thread_data, thread_data, prefix_op);
+        __syncwarp();
 
-        if (probs.Get(i) > 1)
+        if (i < alias.Size())
         {
-            large.data[thread_data - 1] = i;
-        }
-        else
-        {
-            small.data[i - thread_data] = i;
-        }
+            if (probs.Get(i) > 1)
+            {
+                large.data[thread_data - 1] = i;
+            }
+            else
+            {
+                small.data[i - thread_data] = i;
+            }
 
-        if (i == alias.Size() - 1)
-        {
-            *large.size = thread_data;
-            *small.size = alias.Size() - thread_data;
+            if (i == alias.Size() - 1)
+            {
+                *large.size = thread_data;
+                *small.size = alias.Size() - thread_data;
+            }
         }
     }
+    __syncwarp();
 
     while ((!small.Empty()) && (!large.Empty()))
     {
