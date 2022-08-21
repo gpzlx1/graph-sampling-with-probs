@@ -1,6 +1,6 @@
 #include "./cuda_ops.cuh"
 
-template <typename IdType, int TILE_SIZE>
+template <typename IdType, int TILE_SIZE, int BLOCK_WARPS, int WARP_SIZE>
 __global__ void _CSRRowWiseSampleKernel(
     const int64_t num_picks,
     const int64_t num_rows,
@@ -14,9 +14,10 @@ __global__ void _CSRRowWiseSampleKernel(
     IdType *const out_cols)
 {
     // we assign one warp per row
-    assert(blockDim.x == BLOCK_SIZE);
+    assert(blockDim.x == WARP_SIZE);
+    assert(blockDim.y == BLOCK_WARPS);
 
-    int64_t out_row = blockIdx.x * TILE_SIZE;
+    int64_t out_row = blockIdx.x * TILE_SIZE + threadIdx.y;
     const int64_t last_row = min(static_cast<int64_t>(blockIdx.x + 1) * TILE_SIZE, num_rows);
 
     while (out_row < last_row)
@@ -29,7 +30,7 @@ __global__ void _CSRRowWiseSampleKernel(
         if (deg > num_picks)
         {
             const int64_t ares_row_start = ares_ptr[out_row];
-            for (int64_t idx = threadIdx.x; idx < num_picks; idx += BLOCK_SIZE)
+            for (int64_t idx = threadIdx.x; idx < num_picks; idx += WARP_SIZE)
             {
                 // get in and out index, the in_idx is one of top num_picks A-Res value
                 // corresponding index in input CSR.
@@ -43,7 +44,7 @@ __global__ void _CSRRowWiseSampleKernel(
         }
         else
         {
-            for (int64_t idx = threadIdx.x; idx < deg; idx += BLOCK_SIZE)
+            for (int64_t idx = threadIdx.x; idx < deg; idx += WARP_SIZE)
             {
                 // get in and out index
                 const int64_t out_idx = out_row_start + idx;
@@ -53,11 +54,11 @@ __global__ void _CSRRowWiseSampleKernel(
                 out_cols[out_idx] = in_cols[in_idx];
             }
         }
-        out_row += 1;
+        out_row += BLOCK_WARPS;
     }
 }
 
-template <typename IdType, typename FloatType, int TILE_SIZE>
+template <typename IdType, typename FloatType, int TILE_SIZE, int BLOCK_WARPS, int WARP_SIZE>
 __global__ void _CSRAResValueKernel(
     const uint64_t rand_seed,
     const int64_t num_picks,
@@ -69,12 +70,13 @@ __global__ void _CSRAResValueKernel(
     IdType *const ares_idxs,
     FloatType *const ares)
 {
-
-    int64_t out_row = blockIdx.x * TILE_SIZE;
+    assert(blockDim.x == WARP_SIZE);
+    assert(blockDim.y == BLOCK_WARPS);
+    int64_t out_row = blockIdx.x * TILE_SIZE + threadIdx.y;
     const int64_t last_row = min(static_cast<int64_t>(blockIdx.x + 1) * TILE_SIZE, num_rows);
 
     curandStatePhilox4_32_10_t rng;
-    curand_init(rand_seed * gridDim.x + blockIdx.x, threadIdx.x, 0, &rng);
+    curand_init(rand_seed * gridDim.x + blockIdx.x, threadIdx.y * WARP_SIZE + threadIdx.x, 0, &rng);
 
     while (out_row < last_row)
     {
@@ -87,7 +89,7 @@ __global__ void _CSRAResValueKernel(
         {
             const int64_t ares_row_start = ares_ptr[out_row];
 
-            for (int64_t idx = threadIdx.x; idx < deg; idx += BLOCK_SIZE)
+            for (int64_t idx = threadIdx.x; idx < deg; idx += WARP_SIZE)
             {
                 const int64_t in_idx = in_row_start + idx;
                 const int64_t ares_idx = ares_row_start + idx;
@@ -97,7 +99,7 @@ __global__ void _CSRAResValueKernel(
                 ares_idxs[ares_idx] = static_cast<IdType>(in_idx);
             }
         }
-        out_row += 1;
+        out_row += BLOCK_WARPS;
     }
 }
 
@@ -123,17 +125,20 @@ std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
     torch::Tensor temp_idxs = torch::empty(temp_len, indices.options());
 
     const uint64_t random_seed = 7777;
-    constexpr int TILE_SIZE = 128 / BLOCK_SIZE;
+    constexpr int WARP_SIZE = 32;
+    constexpr int BLOCK_WARPS = BLOCK_SIZE / WARP_SIZE;
+    //constexpr int TILE_SIZE = BLOCK_WARPS * 16;
+    constexpr int TILE_SIZE = 1;
     if (replace)
     {
         printf("Not Implemented.\n");
     }
     else
     {
-        const dim3 block(BLOCK_SIZE);
+        const dim3 block(WARP_SIZE, BLOCK_WARPS);
         const dim3 grid((num_rows + TILE_SIZE - 1) / TILE_SIZE);
 
-        _CSRAResValueKernel<int64_t, float, TILE_SIZE><<<grid, block>>>(
+        _CSRAResValueKernel<int64_t, float, TILE_SIZE, BLOCK_WARPS, WARP_SIZE><<<grid, block>>>(
             random_seed,
             num_picks,
             num_rows,
@@ -176,7 +181,7 @@ std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
             temp_indptr.data_ptr<int64_t>(),
             temp_indptr.data_ptr<int64_t>() + 1);
 
-        _CSRRowWiseSampleKernel<int64_t, TILE_SIZE><<<grid, block>>>(
+        _CSRRowWiseSampleKernel<int64_t, TILE_SIZE, BLOCK_WARPS, WARP_SIZE><<<grid, block>>>(
             num_picks,
             num_rows,
             seeds.data_ptr<int64_t>(),
