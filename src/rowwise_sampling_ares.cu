@@ -151,7 +151,7 @@ std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
             coo_col.data_ptr<int64_t>());
     }
 
-    return {coo_row, coo_col, temp_data, temp_idxs};
+    return {coo_row, coo_col};
 }
 
 static auto registry =
