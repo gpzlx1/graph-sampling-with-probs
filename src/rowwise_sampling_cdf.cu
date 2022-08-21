@@ -123,7 +123,7 @@ std::vector<torch::Tensor> RowWiseSamplingProb_CDF(
     const uint64_t random_seed = 7777;
     constexpr int WARP_SIZE = 32;
     constexpr int BLOCK_WARPS = BLOCK_SIZE / WARP_SIZE;
-    constexpr int TILE_SIZE = 1;
+    constexpr int TILE_SIZE = 16;
     if (replace)
     {
         const dim3 block(WARP_SIZE, BLOCK_WARPS);
