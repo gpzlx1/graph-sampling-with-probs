@@ -100,7 +100,6 @@ __global__ void _CSRRowWiseSampleKernel(
     }
 }
 
-
 std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
     torch::Tensor seeds,
     torch::Tensor indptr,
