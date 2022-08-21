@@ -121,7 +121,7 @@ std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
     constexpr int WARP_SIZE = 32;
     constexpr int BLOCK_WARPS = BLOCK_SIZE / WARP_SIZE;
     // constexpr int TILE_SIZE = BLOCK_WARPS * 16;
-    constexpr int TILE_SIZE = 1;
+    constexpr int TILE_SIZE = 16;
     if (replace)
     {
         printf("Not Implemented.\n");
