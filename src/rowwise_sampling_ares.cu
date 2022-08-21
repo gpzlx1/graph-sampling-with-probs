@@ -11,15 +11,14 @@ __global__ void _CSRRowWiseSampleKernel(
     const IdType *const in_cols,
     const FloatType *const prob,
     const IdType *const out_ptr,
-    const IdType *const ares_ptr,
-    FloatType *const warpselect_out_data,
-    IdType *const warpselect_out_index,
     IdType *const out_rows,
     IdType *const out_cols)
 {
     // we assign one warp per row
     assert(blockDim.x == WARP_SIZE);
     assert(blockDim.y == BLOCK_WARPS);
+
+    __shared__ IdType warpselect_out_index[WARP_SIZE * BLOCK_WARPS];
 
     // init warpselect
     WarpSelect<
@@ -39,6 +38,8 @@ __global__ void _CSRRowWiseSampleKernel(
     curand_init(rand_seed * gridDim.x + blockIdx.x, threadIdx.y * WARP_SIZE + threadIdx.x, 0, &rng);
 
     int laneid = threadIdx.x % WARP_SIZE;
+    int warp_id = threadIdx.y;
+    IdType *warpselect_out_index_per_warp = warpselect_out_index + warp_id * WARP_SIZE;
 
     while (out_row < last_row)
     {
@@ -50,7 +51,6 @@ __global__ void _CSRRowWiseSampleKernel(
         // in weighted rowwise sampling without replacement
         if (deg > num_picks)
         {
-            const int64_t ares_row_start = ares_ptr[out_row];
             heap.reset();
             int limit = roundDown(deg, WARP_SIZE);
             IdType i = laneid;
@@ -73,12 +73,12 @@ __global__ void _CSRRowWiseSampleKernel(
             }
 
             heap.reduce();
-            heap.writeOut(warpselect_out_data + ares_row_start, warpselect_out_index + ares_row_start, num_picks);
+            heap.writeOutV(warpselect_out_index_per_warp, num_picks);
 
             for (int64_t idx = laneid; idx < num_picks; idx += WARP_SIZE)
             {
                 const int64_t out_idx = out_row_start + idx;
-                const int64_t in_idx = warpselect_out_index[ares_row_start + idx] + in_row_start;
+                const int64_t in_idx = warpselect_out_index_per_warp[idx] + in_row_start;
                 out_rows[out_idx] = static_cast<IdType>(row);
                 out_cols[out_idx] = in_cols[in_idx];
             }
@@ -109,17 +109,12 @@ std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
     bool replace)
 {
     int num_rows = seeds.numel();
-    torch::Tensor sub_indptr, temp_indptr;
-    std::tie(sub_indptr, temp_indptr) = _GetSubAndTempIndptr<int64_t>(seeds, indptr, num_picks, replace);
+    torch::Tensor sub_indptr = _GetSubIndptr<int64_t>(seeds, indptr, num_picks, replace);
     thrust::device_ptr<int64_t> sub_prefix(static_cast<int64_t *>(sub_indptr.data_ptr<int64_t>()));
-    thrust::device_ptr<int64_t> temp_prefix(static_cast<int64_t *>(temp_indptr.data_ptr<int64_t>()));
     int nnz = sub_prefix[num_rows];
-    int temp_len = temp_prefix[num_rows];
 
     torch::Tensor coo_row = torch::empty(nnz, seeds.options());
     torch::Tensor coo_col = torch::empty(nnz, indices.options());
-    torch::Tensor temp_data = torch::empty(temp_len, probs.options());
-    torch::Tensor temp_idxs = torch::empty(temp_len, indices.options());
 
     const uint64_t random_seed = 7777;
     constexpr int WARP_SIZE = 32;
@@ -144,9 +139,6 @@ std::vector<torch::Tensor> RowWiseSamplingProb_ARes(
             indices.data_ptr<int64_t>(),
             probs.data_ptr<float>(),
             sub_indptr.data_ptr<int64_t>(),
-            temp_indptr.data_ptr<int64_t>(),
-            temp_data.data_ptr<float>(),
-            temp_idxs.data_ptr<int64_t>(),
             coo_row.data_ptr<int64_t>(),
             coo_col.data_ptr<int64_t>());
     }
