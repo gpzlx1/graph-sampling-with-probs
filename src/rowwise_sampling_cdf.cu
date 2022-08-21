@@ -17,7 +17,7 @@ struct BlockPrefixCallbackOp
     }
 };
 
-template <typename IdType, typename FloatType, int TILE_SIZE>
+template <typename IdType, typename FloatType, int TILE_SIZE, int BLOCK_WARPS, int WARP_SIZE>
 __global__ void _CSRRowWiseSampleReplaceKernel(
     const uint64_t rand_seed,
     const int64_t num_picks,
@@ -33,13 +33,19 @@ __global__ void _CSRRowWiseSampleReplaceKernel(
     IdType *const out_cols)
 {
     // we assign one warp per row
-    assert(blockDim.x == BLOCK_SIZE);
+    assert(blockDim.x == WARP_SIZE);
+    assert(blockDim.y == BLOCK_WARPS);
 
-    int64_t out_row = blockIdx.x * TILE_SIZE;
+    int64_t out_row = blockIdx.x * TILE_SIZE + threadIdx.y;
     const int64_t last_row = min(static_cast<int64_t>(blockIdx.x + 1) * TILE_SIZE, num_rows);
 
     curandStatePhilox4_32_10_t rng;
-    curand_init(rand_seed * gridDim.x + blockIdx.x, threadIdx.x, 0, &rng);
+    curand_init(rand_seed * gridDim.x + blockIdx.x, threadIdx.y * BLOCK_WARPS + threadIdx.x, 0, &rng);
+
+    typedef cub::WarpScan<FloatType> WarpScan;
+    __shared__ typename WarpScan::TempStorage temp_storage[BLOCK_WARPS];
+    int warp_id = threadIdx.y;
+    int laneid = threadIdx.x;
 
     while (out_row < last_row)
     {
@@ -52,37 +58,28 @@ __global__ void _CSRRowWiseSampleReplaceKernel(
 
         if (deg > 0)
         {
-            // Specialize BlockScan for a 1D block of BLOCK_SIZE threads
-            typedef cub::BlockScan<FloatType, BLOCK_SIZE> BlockScan;
-            // Allocate shared memory for BlockScan
-            __shared__ typename BlockScan::TempStorage temp_storage;
-            // Initialize running total
-            BlockPrefixCallbackOp<FloatType> prefix_op(MIN_THREAD_DATA);
-
-            int64_t max_iter = (1 + (deg - 1) / BLOCK_SIZE) * BLOCK_SIZE;
+            int64_t max_iter = (1 + (deg - 1) / WARP_SIZE) * WARP_SIZE;
             // Have the block iterate over segments of items
-            for (int64_t idx = threadIdx.x; idx < max_iter; idx += BLOCK_SIZE)
-            {
-                // Load a segment of consecutive items that are blocked across threads
-                FloatType thread_data;
-                if (idx < deg)
-                    thread_data = prob[in_row_start + idx];
-                else
-                    thread_data = MIN_THREAD_DATA;
-                thread_data = max(thread_data, MIN_THREAD_DATA);
-                // Collectively compute the block-wide inclusive prefix sum
-                BlockScan(temp_storage).InclusiveSum(thread_data, thread_data, prefix_op);
-                __syncthreads();
 
+            FloatType warp_aggregate = static_cast<FloatType>(0.0f);
+            for (int64_t idx = laneid; idx < max_iter; idx += WARP_SIZE)
+            {
+                FloatType thread_data = idx < deg ? prob[in_row_start + idx] : MIN_THREAD_DATA;
+                if (laneid == 0)
+                    thread_data += warp_aggregate;
+                thread_data = max(thread_data, MIN_THREAD_DATA);
+
+                WarpScan(temp_storage[warp_id]).InclusiveSum(thread_data, thread_data, warp_aggregate);
+                __syncwarp();
                 // Store scanned items to cdf array
                 if (idx < deg)
                 {
                     cdf[cdf_row_start + idx] = thread_data;
                 }
             }
-            __syncthreads();
+            __syncwarp();
 
-            for (int64_t idx = threadIdx.x; idx < num_picks; idx += BLOCK_SIZE)
+            for (int64_t idx = laneid; idx < num_picks; idx += WARP_SIZE)
             {
                 // get random value
                 FloatType sum = cdf[cdf_row_start + deg - 1];
@@ -99,7 +96,7 @@ __global__ void _CSRRowWiseSampleReplaceKernel(
                 out_cols[out_idx] = in_cols[in_idx];
             }
         }
-        out_row += 1;
+        out_row += BLOCK_WARPS;
     }
 }
 
@@ -124,12 +121,15 @@ std::vector<torch::Tensor> RowWiseSamplingProb_CDF(
     torch::Tensor temp = torch::empty(temp_size, probs.options());
 
     const uint64_t random_seed = 7777;
-    constexpr int TILE_SIZE = 128 / BLOCK_SIZE;
+    constexpr int WARP_SIZE = 32;
+    constexpr int BLOCK_WARPS = BLOCK_SIZE / WARP_SIZE;
+    constexpr int TILE_SIZE = 1;
     if (replace)
     {
-        const dim3 block(BLOCK_SIZE);
+        const dim3 block(WARP_SIZE, BLOCK_WARPS);
         const dim3 grid((num_rows + TILE_SIZE - 1) / TILE_SIZE);
-        _CSRRowWiseSampleReplaceKernel<int64_t, float, TILE_SIZE><<<grid, block>>>(
+
+        _CSRRowWiseSampleReplaceKernel<int64_t, float, TILE_SIZE, BLOCK_WARPS, WARP_SIZE><<<grid, block>>>(
             random_seed,
             num_picks,
             num_rows,
