@@ -1,4 +1,5 @@
-# Compilation
+# Graph-sampling-with-probs
+## Compilation
 Requirement:
 * pytorch >= 1.10
 * DGL >= 0.8
@@ -11,7 +12,7 @@ $ cmake -DCMAKE_PREFIX_PATH=`python -c 'import torch;print(torch.utils.cmake_pre
 $ cd -
 ```
 
-# Run demo
+## Run demo
 ```shell
 # run alias sampling w/ bias (only replace=True)
 $ python test/test_rowwise_sampling_alias.py
