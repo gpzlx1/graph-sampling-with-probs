@@ -3,8 +3,7 @@ import torch
 from bench import bench
 from load_graph import load_reddit, load_ogbn_products
 
-so_path = os.path.join("/home/gpzlx1/graph_sampling_with_probs/build",
-                       'libgswp.so')
+so_path = os.path.join("./build", 'libgswp.so')
 torch.ops.load_library(so_path)
 
 indptr = torch.tensor([0, 10, 11, 20, 22, 22]).long().cuda()
