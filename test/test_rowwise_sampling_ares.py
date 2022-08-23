@@ -12,14 +12,15 @@ indices = torch.arange(0, 5).long().cuda()
 seeds = torch.tensor([0]).long().cuda()
 probs = torch.rand(5).float().abs().cuda()
 
-#for i in torch.ops.gswp.RowWiseSamplingProb_ARes(seeds, indptr, indices, probs,
-#                                                 2, False):
-#    print(i)
+for i in torch.ops.gswp.RowWiseSamplingProb_ARes(seeds, indptr, indices, probs,
+                                                 2, False):
+    print(i)
 
 
 
 g, _, _, _, _ = load_generate(500000, 512)
 #g, _, _, _, _ = load_reddit()
+#g, _, _, _, _ = load_ogbn_products()
 g = g.formats(['csr'])
 csr = g.adj(scipy_fmt='csr')
 seeds = [i for i in range(200000)]

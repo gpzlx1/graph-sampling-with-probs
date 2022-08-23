@@ -16,7 +16,9 @@ for i in torch.ops.gswp.RowWiseSamplingProb_CDF(seeds, indptr, indices, probs,
                                                 5, True):
     print(i)
 
-g, _, _, _, _ = load_generate(500000, 100)
+g, _, _, _, _ = load_generate(500000, 512)
+#g, _, _, _, _ = load_reddit()
+#g, _, _, _, _ = load_ogbn_products()
 g = g.formats(['csr'])
 csr = g.adj(scipy_fmt='csr')
 seeds = [i for i in range(200000)]
