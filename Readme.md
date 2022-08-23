@@ -1,4 +1,30 @@
 # Graph-sampling-with-probs
+```shell
+.
+├── CMakeLists.txt
+├── Readme.md
+├── src
+│   ├── cuda_ops.cuh
+│   ├── rowwise_sampling.cu
+│   ├── rowwise_sampling_alias.cu
+│   ├── rowwise_sampling_ares.cu
+│   ├── rowwise_sampling_cdf.cu
+│   ├── test.cu
+│   └── warpselect
+│       ├── MergeNetworkWarp.cuh
+│       ├── Pair.cuh
+│       ├── Reductions.cuh
+│       ├── Utils.cuh
+│       └── WarpSelect.cuh
+└── test
+    ├── bench.py
+    ├── load_graph.py
+    ├── test.py
+    ├── test_rowwise_sampling_alias.py      # alias sampling test and bench
+    ├── test_rowwise_sampling_ares.py       # ares sampling test and bench
+    ├── test_rowwise_sampling_cdf.py        # cdf sampling test and bench
+    └── test_rowwise_sampling_uniform.py    # uniform sampling test and bench
+```
 ## Compilation
 Requirement:
 * pytorch >= 1.10
